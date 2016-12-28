@@ -1,0 +1,902 @@
+---
+title: "CSCI 349 Final Project"
+author: "Nadeem Nasimi & Michael Hammer"
+date: "12/6/2016"
+output: 
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+# FUNCTION: import libraries
+my.install <- function(pkg) {
+   if (!(pkg %in% installed.packages()[,1])) {
+      install.packages(pkg)
+   }
+   return (require(pkg,character.only=TRUE))
+}
+
+my.install("e1071")
+my.install("mlbench")
+my.install("caret")
+my.install("jsonlite")
+my.install("arules")
+my.install("stringr")
+my.install("ggplot2")
+my.install("neuralnet")
+my.install("NeuralNetTools")
+my.install("nnet")
+my.install("pROC")
+my.install("klaR")
+my.install("rpart")
+my.install("lattice")
+my.install("randomForest")
+my.install("scales")
+my.install("stats")
+```
+
+# No8am Saved Schedule Analysis
+
+No8am is a course scheduling web site available to students at Bucknell University. It has been running since our Sophomore year in 2014 and collected course information from hundreds of students. This document presents how we explored this data by using various Data Mining Topics in R.
+
+## Data Description
+
+Data Creation:    
+A user’s schedule is sent to a database each time the user clicks the save schedule button on web site. The data has been exported from the database as a list of saved course schedules over multiple semesters. 
+
+Data Schema:    
+Each row of the data represents a schedule that a student saved. Each column represents an attribute about the schedule (ex: creation time, course section in the schedule). 
+
+
+## Data Import
+
+Importing Data:    
+We use the JSONLite library to convert the data to JSON from the file containing the saved schedules, which is stored in a format similar to JSON. We had to set the flatten parameter to True in the library's fromJSON() function so that it would be converted to a table format instead of a list of lists. 
+
+When first converting the data there were complications in the JSON parsing function due to the JSON file haveing null values in it. The null values were caused by students picking a course, but not a specific section. We resolved the issue by substituting the null values with placeholder data similar to the values for courses that have had a section selected.
+
+Note:    
+
+* The data for each course-section column contains the CRN and section numbers.  
+* A course-section can be the main section, a lab, a reciteation, or a problem session. (these are denoted by the end of the column names, ex: .main).     
+* The reftime is when a schedule was created.     
+
+
+```{r data-import}
+# set filename of data
+fileName <- "data/no8am_export_11-9.txt"
+
+# open connection to file and read in lines
+conn <- file(fileName,open="r")
+linn <-readLines(conn)
+close(conn)
+
+# remove null values from JSON string
+linn <- gsub("null", "[\"000000\",\"00\"]", linn)
+
+# convert data to JSON formatted string
+linnString <- paste(linn, collapse = ',')
+linnString <- paste("[", linnString, "]")
+
+# create datafame from JSON string
+rawData <- fromJSON(linnString, flatten = T)
+
+# the raw data
+head(rawData[1:5])
+
+# section of raw data showing course information
+head(rawData[10:15])
+```
+
+## Data Cleaning
+
+Cleaning our data was an interative process and we did not do all of the steps at the beginning. Initially, we cleaned the obvious aspects such as irrelevant data and converting to correct data types. However, as we used the data, we discoverd more features that we had to clean later, such as the presense of non-Bucknell courses. 
+
+Steps:      
+First, we had to remove some unnecessary columns that did not provide us with any new or useful information. We also changed all the column's names to be better formatted. Next, we filtered out courses that are not offered by Bucknell. These were added to the data when Nadeem was experimenting with expanding the website to other schools. Additionally, converted attributes in the dataframe to their correct type, such as the UNIX timestamp representing when a schedule was created.
+
+```{r data-cleaning}
+# generate vector of columns to drop
+drops <- c("kind", "path.reftime" ,"path.kind", "path.ref", "path.collection", 
+           "value.semester", "value.hello", "value.customName", 
+           "value.courseData.CHEM 202.main", "value.courseData.CHEM 202.R", 
+           "value.courseData.CHEM 202.L", "value.courseData.EDUC 201.main", 
+           "value.courseData.RELI 200.main", "value.courseData.MATH 201.main", 
+           "value.courseData.ACFM 261.main", "value.courseData.ECON 103.main", 
+           "value.courseData.CSCI 203.main", "value.courseData.CSCI 203.L"
+)
+
+# drop unnecessary columns
+data = rawData[ , !(names(rawData) %in% drops)]
+
+# clean column names
+colnames(data) = sapply(colnames(data), function(x) {gsub("value.","",x)})
+
+# drop non-bucknell courses
+bucknellDepartments = c("ACFM", "AFST", "ANBE", "ANTH", "ARBC", "ARTH", "ARST", "ASTR", "BIOL", "BMEG", "CHEG", "CHEM", "CHIN", "CEEG", "CLAS", "CSCI", "ENCW", "DANC", "EAST", "ECON", "EDUC", "ECEG", "ENGR", "ENGL", "ENST", "ENFS", "FOUN", "FREN", "GEOG", "GEOL", "GRMN", "GLBM", "GREK", "HEBR", "HIST", "HUMN", "IREL", "ITAL", "JAPN", "LATN", "LAMS", "LING", "ENLS", "MGMT", "MSUS", "MIDE", "MATH", "MECH", "MILS", "MUSC", "NEUR", "PHIL", "PHYS", "POLS", "PSYC", "RELI", "RESC", "RUSS", "SIGN", "SOCI", "SPAN", "THEA", "UNIV", "WMST", "ELEC")
+
+coursesToDropI = sapply(colnames(data)[3:ncol(data)], 
+                          function(x) {
+                            !(unlist(strsplit(x, ' '))[1] %in% bucknellDepartments)
+                          }
+                        )
+
+# remove unnecessary columns
+coursesToDrop = colnames(data)[3:ncol(data)][coursesToDropI]
+data = data[ , !(names(data) %in% coursesToDrop)]
+
+# convert unix time to data
+data$reftime = as.POSIXct(unlist(data$reftime)/1000, origin="1970-01-01", tz="UTC")
+
+# show a snippet of the data
+head(data[1:6])
+```
+
+Note:  
+
+* At times you will see us subset data using [3:ncol(data)], this is used to only give us the columns for the course sections.   
+
+## Creating a Binary Dataset
+
+At this point the data frame is clean and in a good format. However, we chose to create another, more simplified, dataset by abstracting away the CRN and section numbers of a course chosen by a student. We do this by replacing every instance of a section with a selected section with a `1` and all other values with `0`.
+
+```{r generateBinaryData}
+# convert cells to have 1's if a section is selected for a course or 0 if not
+binaryData = cbind(data[1:2], sapply(data[3:ncol(data)], function(x) {
+  x != "NULL"
+}))
+
+# Remove empty schedules from data and binary data
+rmRow = list()
+for (row in 1:nrow(binaryData)) {
+  if (sum(binaryData[row,]==T) == 0) {
+    rmRow <- append(rmRow,row)
+  }
+}
+
+binaryData <- binaryData[!(1:nrow(binaryData) %in% rmRow),]
+data <- data[!(1:nrow(data) %in% rmRow),]
+
+# show subsection cleaned data
+head(binaryData[1:4])
+```
+
+## Creating Useful Datasets
+
+Note:    
+
+* We create these datasets early on in the document to avoid clutter while we perform analyses and create plots.
+* In the later sections, there are links to their respective data in this section. 
+
+### Filter For Main Sections
+
+Here we create a list of all the column names that correspond to a main section of a course (i.e it ignores labs, recitations, etc...). The list will allow us to get a subset of our data that only conatins the main courses.  
+
+```{r dividingCourses}
+# get all column names (names of courses)
+courseNames <- colnames(data)[3:ncol(data)]
+
+# get the type of each section (main section, recitation, lab, or problem session)
+courseType <- sapply(strsplit(courseNames,"[.]"), function(x) x[2])
+
+# get only main sections of each course
+mains <- as.list(courseNames[courseType == "main"])
+
+# look at head of list
+head(unlist(mains))
+```
+
+### Grouping Courses by Department
+
+Here we are creating a list that has a nested list for each department. Each nested list contains the courses that are in the department. We can now easily access all courses of a specified department. 
+
+```{r groupingCourses}
+# create list of empty lists for each department
+coursesByDepartment <- vector("list", length(bucknellDepartments)) 
+
+# name each nested list by department
+names(coursesByDepartment) <- bucknellDepartments                  
+
+# Fill each list for a department with their respective courses
+for (i in mains) {
+  deptName = unlist(strsplit(i, ' '))[1]
+  coursesByDepartment[[deptName]] <- c(coursesByDepartment[[deptName]], i)
+}
+
+# look at head of dataset
+head(coursesByDepartment)
+```
+
+### Create a Dataset for Predictive Models
+
+In this section we create a data frame that will be used to generate predictive models for the CSCI department. For each schedule it stores the number of departments in the schedule. 
+
+In order to allow the predictive models to use the data frame, we had to make each column a factor and make the CSCI department have a predictable output (i.e. predictive models cannot predict numbers like "1" and "0", so we had to use "yes" and "no" for if a schedule has the CSCI department or not).
+
+```{r predictiveModelDataframe}
+# FUNCTION: Converts columns to factor (except department being predicted on)
+convertToFactor <- function(df) {
+  for (dept in bucknellDepartments) {
+    if (dept != "CSCI") {
+      df[, dept] <- as.factor(df[, dept]) 
+    }
+  }
+  return(df)
+}
+
+# Create data frame with columns for if a course is scheduled
+binaryCourseData = binaryData[3:ncol(binaryData)]
+
+# Select only the main courses
+binaryCourseDataMains = binaryData[, unlist(mains)]
+
+# From the list of main courses, it gets the department names
+colDepts <- sapply(mains, function(x) {
+    return(unlist(strsplit(x, ' '))[1])
+});
+
+# Create empty dataframe with department names for columns
+scheduleByDepartment <- data.frame(matrix(ncol = length(bucknellDepartments), nrow = nrow(binaryData)))
+colnames(scheduleByDepartment) <- bucknellDepartments
+
+# fill scheduleByDepartment with the number of times a department appears in a schedule
+for (row in 1:nrow(scheduleByDepartment)) {                # for each row
+  for (dept in bucknellDepartments) {                      # for each department in row
+    # select all columns(courses) of a department and sum their occurances
+    scheduleByDepartment[row, dept] = sum( as.numeric(binaryCourseDataMains[row, colDepts == dept])) 
+  }
+}
+
+# initialize dataframe for predictive algorithms on the CSCI department
+departmentCount <- scheduleByDepartment
+
+# converts columns in departmentCount to factors
+departmentCount <- convertToFactor(departmentCount)
+
+# Convert department that is being predicted on into a predicatble form (cannot be represented as a number)
+departmentCount$CSCI[departmentCount$CSCI > 0] <- 1        # all transacction's CSCI-column become 1 if they have compSci courses
+departmentCount$CSCI[departmentCount$CSCI == 1] <- "yes"   # convert 1's to "yes"
+departmentCount$CSCI[departmentCount$CSCI == "0"] <- "no"  # convert 0's to "no"
+departmentCount$CSCI <- as.factor(departmentCount$CSCI)    # convert CSCI column to factor
+
+# look at structure and head of dataset
+str(departmentCount)
+head(departmentCount)
+```
+
+### Creating Datasets to be Plotted
+
+We made various datasets for creating plots later in the document. These will help us better understand our data. 
+
+```{r plotDatasets}
+# PLOT: popularity of courses within a department
+# get frequency of courses within various departments
+tmp <- sapply(binaryData[3:ncol(binaryData)],sum)
+ENGL.frequencies <- tmp[coursesByDepartment$ENGL]  # English department course popularity
+CSCI.frequencies <- tmp[coursesByDepartment$CSCI]  # Computer Science department course popularity
+ECON.frequencies <- tmp[coursesByDepartment$ECON]  # Economics department course popularity
+MGMT.frequencies <- tmp[coursesByDepartment$MGMT]  # Management department course popularity
+MATH.frequencies <- tmp[coursesByDepartment$MATH]  # Mathematics department course popularity
+
+# PLOT: popularity of departments
+# get frequency of each department
+DEPTs.frequencies <- sapply(scheduleByDepartment, sum)
+
+# PLOT: number of sections people have
+# get number of sections in each schedule
+sectionCounts <- apply(binaryData[3:ncol(binaryData)], 1, sum)
+
+# PLOT: number of courses people take
+# get number of courses in each schedule
+mainData <- binaryData[unlist(mains)]
+courseCounts <- apply(mainData, 1, sum)
+
+# PLOT: number of schedules created over time
+# get number of schedules by day
+# get all schedule creation dates
+Date <- as.Date(data$reftime)
+dates <- data.frame(Date)
+```
+
+### Create Datasets for Association Rules
+
+We make two datasets for creating association rules with the Apriori algorithm (each row represents a schedule and a set of data for the algorithm). 
+
+The first dataset (transactionListMain) has each row contain the names of the courses that are in its schedule. If the course is not in the schedule, then it contains an empty string for that course. 
+
+The second dataset (transactionListDepts) is the same as the first except by department instead of by course. 
+
+```{r transactionDatasets}
+# FUNCTION: replace Trues in a dataframe with the name of the course (column names)
+# and other values with the empty string
+replaceWithColumnName <- function(df) {
+  for (colNumber in 1:ncol(df)) {
+    for (row in 1:length(df[,1])) {
+      colName = colnames(df)[colNumber]
+      if (df[row, colNumber] == T) {      # if the value is true, set each row of column to column name
+        df[row, colNumber] = colName
+      }
+    }
+  }
+  df[df == "FALSE"] <- ""                 # sets False values to empty string
+  return(df)
+}
+
+# FUNCTION: takes a set of data and generates transactions from it by first writing the data
+# to a file and then reading it in transaction form
+createTransactions <- function(transactionList) {
+  # create a list of lists where each nested list contains only the courses in a row
+  transactions = apply(transactionList, 1, 
+      function(row) strsplit(paste(row[nzchar(row)], collapse = ", "), ',') # creates list of all courses in row
+  )
+  
+  # creates a string that can store the transaction data as a CSV
+  transactionString <- ""                                                   # string to store final data string
+  for (row in 1:length(transactions)) {
+    vRow = unlist(transactions[row])
+    tranStr <- ""                                                           # string to create each row
+    for (col in 1:length(vRow)) {
+        tranStr <- paste(tranStr,vRow[col],",")                             # append commas between courses in a row
+    }
+    transactionString <- paste(transactionString,sub(",$",'',tranStr),"\n") # removes last comma, adds newline, appends to final string
+  }
+  transactionString <- sub("\n$",'',transactionString)                      # removes last newline
+  
+  # write the string containing the data to a CSV file
+  write(transactionString, file = "my_basket")
+  # read transaction data from the CSV file
+  trans = read.transactions("my_basket", format = "basket", sep=",")
+  return(trans)
+}
+
+# replace values in data to their course name
+rules <- replaceWithColumnName(binaryData[3:ncol(binaryData)])
+
+# get only the main courses from the rules
+transactionListMain <- rules[unlist(mains)]
+
+# look at subsection of dataset
+head(transactionListMain[, 1:10]) 
+
+# Create empty dataframe with department names for columns
+transactionListDepts <- data.frame(matrix(ncol = length(bucknellDepartments), nrow = nrow(binaryData)))
+colnames(transactionListDepts) <- bucknellDepartments
+
+# fill transactionListDepts with
+for (row in 1:nrow(transactionListDepts)) {
+  for (dept in bucknellDepartments) {
+    # select all columns(courses) in a department and check if there are one or more
+    transactionListDepts[row, dept] = sum( as.numeric(binaryCourseDataMains[row, colDepts == dept])) > 0
+  }
+}
+
+# replace values in data to their department name
+transactionListDepts <- replaceWithColumnName(transactionListDepts)
+
+# look at subsection of dataset
+head(transactionListDepts[,1:20])
+```
+
+### Create a Dataset for Correlation Analysis
+
+We made two lists for analyzing the correlation between the number of times a 
+student scheduled a department and the number of courses a department has.
+
+```{r correlationDatasets}
+# Create list of departments in STEM
+Departments.STEM <- c("ASTR", "BIOL", "BMEG", "CHEG", "CHEM", "CEEG", "CSCI", "ECEG", "ENGR", "ENST", "GEOL", "MATH", "MECH", "NEUR", "PHYS", "ELEC", "PSYC", "ECON", "MGMT")
+
+# Create list of departments not in STEM
+Departments.nonSTEM <- bucknellDepartments[ !(bucknellDepartments %in% Departments.STEM)]
+
+# Get the number of times a department was placed in a schedule
+deptStudentEnrolled <- sapply(scheduleByDepartment, sum)
+deptStudentEnrolled.STEM <- sapply(scheduleByDepartment[Departments.STEM], sum)
+deptStudentEnrolled.nonSTEM <- sapply(scheduleByDepartment[Departments.nonSTEM], sum)
+
+# Get the number of courses in a department
+coursesByDeptCorrelation <- unlist(lapply(coursesByDepartment[names(deptStudentEnrolled)], length))
+coursesByDeptCorrelation.STEM <- unlist(lapply(coursesByDepartment[Departments.STEM], length))
+coursesByDeptCorrelation.nonSTEM <- unlist(lapply(coursesByDepartment[Departments.nonSTEM], length))
+```
+
+Next, we create dataframes for plotting the correlation between frequency of course levels 
+scheduled and the time during registration period.
+
+```{r correlationRegistrationPeriodDataset}
+# Declare times defining registration period
+registrationEnd <- as.POSIXct("2016-11-11")
+registrationStart <- as.POSIXct("2016-10-15")
+
+# Index binaryData with dates
+binaryDataReg <- binaryData[binaryData$reftime > registrationStart & binaryData$reftime < registrationEnd,]
+binaryDataReg <- binaryDataReg[, colnames(binaryDataReg) %in% c(unlist(mains),"reftime")]
+
+# convert schedule creation time days until end of registration period
+binaryDataReg$reftime <- floor(registrationEnd - binaryDataReg$reftime)
+colnames(binaryDataReg) <- c("daysUntil", colnames(binaryDataReg)[2:ncol(binaryDataReg)])
+
+# Group departments by course level
+numLevels <- 4
+coursesByLevel.names <- as.character(1:numLevels)
+coursesByLevel <- as.list(rep(NA, length(coursesByLevel.names)))
+names(coursesByLevel) <- coursesByLevel.names
+
+for (i in 1:numLevels) {
+  mask <- unlist(lapply(strsplit(colnames(binaryDataReg),' '),function(X){substr(X[2],1,1) == toString(i)}))
+  coursesByLevel[[i]] <- colnames(binaryDataReg)[mask]
+}
+
+# Dataframe to store time by level - holds count
+daysUntil <- 26
+levelByTime.colnames <- c("daysUntil", "level", "department", "count")
+levelByTime <- data.frame(matrix(ncol=length(levelByTime.colnames),nrow=(length(bucknellDepartments)*numLevels*daysUntil)))
+colnames(levelByTime) <- levelByTime.colnames
+
+indexCounter <- 1
+
+# Populate dataframe with values
+# loop through depts
+for (deptName in bucknellDepartments) {
+  # loop through levels
+  for (level in 1:numLevels) {
+    # get all courses in a level
+    currentCoursesLevel <- unlist(coursesByLevel[toString(level)])
+    
+    # get only courses for a single dept in current level
+    isCurrentDept <- substr(currentCoursesLevel, 1, 4) == deptName
+    currentCoursesLevelDept <- currentCoursesLevel[isCurrentDept]
+    
+    # break that down by days until end of registration period
+    for (dayUntil in 1:daysUntil) {
+      if (length(currentCoursesLevelDept) > 1) {
+        # get all schedules with current day until
+        allDayUntil <- binaryDataReg[binaryDataReg$daysUntil == dayUntil, ]
+        
+        # index those by a single dept in current level and take the sum
+        allDayUntilByLevelDept <- allDayUntil[, colnames(allDayUntil) %in% currentCoursesLevelDept]
+        
+        sumAllDayUntilByLevelDept <- sum(sapply(allDayUntilByLevelDept, sum))
+        
+        # store values in df
+        currentRow <- levelByTime[indexCounter,]
+        currentRow$daysUntil <- dayUntil
+        currentRow$level <- level
+        currentRow$department <- deptName
+        currentRow$count <- sumAllDayUntilByLevelDept
+        
+        levelByTime[indexCounter,] <- currentRow
+      }
+
+      indexCounter <- indexCounter + 1
+    }
+  }
+}
+
+# remove NA values
+levelByTimeClean <- na.omit(levelByTime)
+levelByTimeClean <- levelByTimeClean[levelByTimeClean$count != 0, ]
+
+levelByTimeClean$level <- levelByTimeClean$level*100
+
+# Interesting Statistics about when students create schedules during registration
+summary(levelByTimeClean$daysUntil)
+
+# print head of the data
+head(levelByTimeClean)
+
+```
+
+### Create Dataset for Clustering
+
+We created a dataset that for clustering the number of schedules created on the same day. To do this, we used the K-Means algorithm. The K-Means algorithm partitions data into k groups, where each groups contains the points closest to the centroid of the group. When we use the K-Means function, we specify a k-value of 4 and a nstart of 20. (K-value represents the number of clusters it will make; nstart represents the number of starting cluster-sets it will make and choose the best from to use) We used a k-value of 4 becuase we knew there were 4 semesters in the time period used. 
+
+```{r clusteringDataset}
+# create dataframe with dates and counts of schedules on that date
+dateCounts <- data.frame(table(dates$Date))
+
+# update column names
+colnames(dateCounts) <- c("Date", "count")
+
+# convert dates to be continuous numeric values (Unix timestamps)
+dateCounts$Date <- as.numeric(as.POSIXct(dateCounts$Date))
+
+# run K-means on data
+dateCluster <- kmeans(dateCounts, centers = 4, nstart = 20)
+
+# Change the clusters from being numeric to being clusters
+dateCluster$cluster <- as.factor(dateCluster$cluster)
+```
+
+## Exploring the Data
+
+### Data Statistics
+
+```{r dataStats}
+# Number of Schedules Saved
+nrow(data)
+
+# Number of Total Sections
+ncol(data[3:ncol(data)])
+
+# Number of Main Courses
+length(mains)
+
+# Number of Departments
+length(bucknellDepartments)
+
+# Time Range of Data Collection
+max(data$reftime) - min(data$reftime)
+
+# stats for number of times a department was placed in a schedule
+summary(deptStudentEnrolled)
+
+# stats for number of courses in a department
+summary(coursesByDeptCorrelation)
+
+# stats for number of students selecting a department
+summary(deptStudentEnrolled)
+
+# stats for number of courses in a department
+summary(coursesByDeptCorrelation)
+```
+
+### Plots
+
+[See data above](#creating-datasets-to-be-plotted)
+
+#### Popularity of Courses in Departments
+
+```{r generatePlots}
+# Visualize the number of English courses enrolled in
+qplot(names(ENGL.frequencies), ENGL.frequencies, geom="blank") +
+    geom_segment(aes(xend=names(ENGL.frequencies)), size = 3,yend=0) +
+    expand_limits(y=0) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ggtitle("Popularity of different English courses")
+
+# Visualize the number of Computer Science courses enrolled in
+qplot(names(CSCI.frequencies), CSCI.frequencies, geom="blank") +
+    geom_segment(aes(xend=names(CSCI.frequencies)), size = 3,yend=0) +
+    expand_limits(y=0) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ggtitle("Popularity of different Computer Science courses")
+
+# Visualize the number of Economics courses enrolled in
+qplot(names(ECON.frequencies), ECON.frequencies, geom="blank") +
+    geom_segment(aes(xend=names(ECON.frequencies)), size = 3,yend=0) +
+    expand_limits(y=0) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ggtitle("Popularity of different Economics courses")
+
+# Visualize the number of Management courses enrolled in
+qplot(names(MGMT.frequencies), MGMT.frequencies, geom="blank") +
+    geom_segment(aes(xend=names(MGMT.frequencies)), size = 3,yend=0) +
+    expand_limits(y=0) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ggtitle("Popularity of different Management courses")
+
+# Visualize the number of Mathematics courses enrolled in
+qplot(names(MATH.frequencies), MATH.frequencies, geom="blank") +
+    geom_segment(aes(xend=names(MATH.frequencies)), size = 3,yend=0) +
+    expand_limits(y=0) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ggtitle("Popularity of different Math courses")
+
+# Visualize the number of Departments enrolled in
+qplot(names(DEPTs.frequencies), DEPTs.frequencies, geom="blank") +
+    geom_segment(aes(xend=names(DEPTs.frequencies)), size = 3,yend=0) +
+    expand_limits(y=0) + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ggtitle("Frequency of departments")
+```
+
+These plots give us insight into how many people enroll in different courses
+or departments.
+
+From the first four plots of course popularity within departments, we see that 
+the introductory sections of courses are very popular, whereas the plot for 
+MATH has greater popularity in the 200-level courses. 
+
+The department frequency plot also generates interesting insights, with the 
+prominent one being the significantly greater popularity of the MATH 
+department relative to the other departments.
+
+#### Course and Section Counts
+
+```{r courseAndSectionCounts}
+# Visualize number of courses people take
+qplot(courseCounts, binwidth=1) + ggtitle("Number of courses in a schedule")
+
+# Visualize number of sections people have
+qplot(sectionCounts, binwidth=1) + ggtitle("Number of sections in a schedule\n (includes labs and recitations)")
+```
+
+This first plot matches our expectations that the majority of students take 4 
+courses. The adjacent values, 3 and 5, can be explained by students planning on
+overloading or underloading. All other values can most likely be explained by 
+students that saved incomplete schedules or saved additional courses as backups 
+during registration period.
+
+The second plot, containing the number of sections in a schedule, has a greater 
+variability than the first. This is due to the varaiblity in the number of 
+secitons a course has. Some of the heavier schedules can contain more labs for 
+instance.
+
+#### Schedule Creation Frequency Over Time
+
+```{r scheduleCreationFrequency}
+ggplot(dates, aes(x=Date)) + geom_histogram(binwidth=30, colour="white") +
+       scale_x_date(labels = date_format("%Y-%b"),
+                    breaks = seq(min(dates$Date)-5, max(dates$Date)+5, 30),
+                    limits = c(min(dates$Date), max(dates$Date))) +
+       ylab("Frequency") + xlab("Year and Month") + 
+       ggtitle("Schedule Creation Frequency") +
+       theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+This plot shows the usage of No8am. It shows how many schedules were created in each month over the past 2 years. From this plot, we can see that the spikes (over 200 schedules) represent registration periods. Over there past 2 years there would have been 4 registration periods and there are 4 spikes.
+
+## Supervised Machine Learning Models
+
+In this section, we predicted whether a student will take a 
+course in the Computer Science Department based on the other departments in 
+their schedule. We did this by using several supervised machine learning 
+models and training them with data labels for the target class being
+predicted. 
+
+### Generate Models
+
+Four Algorithms for Generating Models:
+* Neural Nets: This model is based on the human brain and nervous system, 
+interconnecting multiple neural units to generate predictions.    
+* Naive Bayes: This is a simple model based on Bayes’ Theorem with an assumption 
+of independence among predictors.    
+* Decision Trees: This model generates a tree-like data structure to determine which 
+attributes of data to split on to best classify the data.     
+* Random Forests: This model generates multiple decision trees instead of just one 
+to avoid overfitting a model to its training data.  
+
+We use 75% of the data for training the models, and evaluate them using the 
+remaining 25%. We train the models using 10-fold cross-validation.
+
+[See data above](#create-a-dataset-for-predictive-models)
+
+```{r createModels, results='hide', warning=F}
+# split data into training and test data
+trainIndex <- createDataPartition(departmentCount$CSCI, p = 0.75, list = F)
+trainData <- departmentCount[trainIndex, ]
+testData <- departmentCount[-trainIndex, ]
+
+# create train control using 10-fold cross-validation
+train_control <- trainControl( method = "cv", number=10, savePredictions =T, 
+                               summaryFunction = twoClassSummary, classProbs = T)
+
+# generate and store the different models using the training dataset
+annModel <- train(CSCI ~ ., data = trainData, trControl = train_control,
+                  method = "nnet", metric = "ROC", maxit = 1000)
+
+treeModel <- train(CSCI ~ ., data = trainData, trControl=train_control,
+                   method = "rpart", metric = "ROC")
+
+nbayesModel <- train(CSCI ~ ., data = trainData, trControl = train_control,
+                     method = "nb", metric = "ROC")
+
+rfModel <- train(CSCI ~ ., data = trainData, trControl = train_control,
+                 method = "rf", metric = "ROC")
+```
+
+
+### Evaluate and Compare Models
+
+Now that the models have been created, we can generate metrics for the success
+of each model using the remaining 25% of the data (testData) we allocated for this task. 
+
+The metrics we will be focusing on to quantify success include:  
+
+* Recover Operating Characteristic (ROC): a graph that illustrates a binary classifier system. It is considered good if the curve moves up and to the right
+* Specificity: a value representing the models ability to correctly predict a true value (If a schedule has a CSCI course)  
+* Sensitivity: a value representing the model's ability to correctly predict a false value (If a schedule doesn't have a CSCI course)    
+
+https://en.wikipedia.org/wiki/Receiver_operating_characteristic  
+https://en.wikipedia.org/wiki/Sensitivity_and_specificity  
+
+```{r modelResults}
+# FUNCTION: predict on model using test data, generate ROC curve, and plot it
+generateModelResults <- function(model, testData, predictColumn) {
+  predData <- predict(model, testData, type="prob")
+  modelROC <- roc(testData[, predictColumn], predData$yes)
+  plot(modelROC)
+}
+
+# generate model results using test data by predicting on the CSCI department
+generateModelResults(annModel, testData, "CSCI")
+generateModelResults(treeModel, testData, "CSCI")
+generateModelResults(nbayesModel, testData, "CSCI")
+generateModelResults(rfModel, testData, "CSCI")
+
+# resample the data
+results <- resamples(list(
+  ANN = annModel,
+  DT = treeModel,
+  NB = nbayesModel, 
+  RF = rfModel
+))
+
+# print and plot the resampled data
+summary(results)
+bwplot(results)
+```
+
+The Random Forest and Neural Net clearly perform best based on how their ROC, 
+specificity, and sensitivity values are closest to 1. The Random Forest appears 
+to perform less consistently, as can be seen by its slightly larger IQR in all three 
+attributes. However, due to the similarity in performance in these plots, it is hard to 
+tell which of the two models performed better. However, the Neural Net takes 
+significantly more time to create. 
+
+The Decision Tree and Naive Bayes models appear to have the worst performaces. Both
+of their ROC values are the lowest and the Decision Tree has a lot of variability. 
+Interestingly, we think that the naive bayes model always guesses that a student 
+would want to take a CSCI course, regardless of the courses they have selected. 
+We can see this by how their sensitivities are at 1 while their 
+specificities are at 0. 
+
+## Association Rules
+
+Using the Apriori algorithm on transaction-based data, we can quickly find the most frequent itemsets. These will represent the most commonly taken groups of courses and departments at Bucknell.
+
+The concepts we use in this section include:  
+
+*  Association rules: A rule-based method that finds relations between variables. 
+It is often in market basket analysis to find which items among all items available 
+for sale in a store are purchased together. In our case, we use it see which 
+courses and departments are taken together.
+*  Apriori: An association rule algorithm that decreases the time taken to generate 
+strong rules by only using the frequent itemsets, determined by a minimum support value,
+to generate larger itemsets.
+
+[See data above](#create-datasets-for-association-rules)
+
+### Association Rules By Course
+
+We will begin by analyzing assocation rules between different courses. This is done by
+creating a transaction object from the main sections of each course, where each 
+transaction is a list of courses selected in each schedule.
+
+```{r associationRules}
+# FUNCTION: Run apriori on the transaction data and output results
+enhancedInspect <- function(trans, suppFreq, suppRules) {
+  print(summary(trans))
+  freqItemsets <- apriori(trans, parameter=list(support=suppFreq, target="frequent"))
+  inspect(freqItemsets)
+  trans_rules <- apriori(trans,parameter=list(supp=suppRules,target="rules"))
+  inspect(sort(trans_rules, by="lift"))
+}
+
+# create transactions using all transaction list containing courses
+transMain <- createTransactions(transactionListMain)
+
+# generate frequent itemsets, run apriori on the data, and print the results
+enhancedInspect(transMain, 0.02, 0.015)
+```
+
+The association rules provide insight to which courses are likely to be taken together. For example, we found the following rule in our output:
+
+`{ENGR 229.main, MATH 222.main} => {CSCI 206.main}`
+ 
+This matches the courses taken by sophomores in the Spring semester.
+
+### Association Rules By Department
+
+Although the output from apriori when given individual course data provides useful information, it is dense and difficult to interpret. We group courses by department as it will be easier to understand, while providing similar insight.
+
+```{r assocationRulesByDept}
+# create transactions using all transaction list containing departments
+transDepts <- createTransactions(transactionListDepts)
+
+# generate frequent itemsets, run apriori on the data, and print the results
+enhancedInspect(transDepts, 0.04, 0.007)
+```
+
+In the output, we see rules with groupings such as the following: `{CHEM,MECH} => {ECEG}`
+
+This matches the standard semester for Mechanical Engineering majors in the Fall of sophomore year.
+
+We also see output such as: `{ACFM,ENGL} => {MGMT}`
+
+From this, we can tell that English courses may be a popular elective for management majors.
+
+## Correlation Analysis 
+
+In this section, we look at correlations in different aspects of our data. A correlation 
+is a statistical measure of how two or more variables fluctuate together. 
+
+We do this by developing a hypothesis for patterns that may appear in our data, 
+getting a dataframe we can plot to test our hypothesis, plotting the data, and analyzing 
+the results.
+
+[See data above](#create-a-dataset-for-correlation-analysis)
+
+### Correlating Number of Courses in a Department and Frequency Department was Scheduled
+
+In this section we look at the correlation between Department Course Count and
+Department Frequency.
+
+```{r correlationDepartmentFrequencyAndEnrollment}
+# Generate plot
+qplot(coursesByDeptCorrelation,deptStudentEnrolled) + geom_point() + geom_smooth(method='lm') + geom_text(aes(label=names(DEPTs.frequencies)),hjust=0, vjust=0) + ggtitle("Department Course Count vs Department Frequency") + xlab("Number of Courses in Departments") + ylab("Frequency Department was Scheduled")
+
+# Find correlation
+cor(coursesByDeptCorrelation,deptStudentEnrolled)
+
+# Generate plot (STEM)
+qplot(coursesByDeptCorrelation.STEM,deptStudentEnrolled.STEM) + geom_point() + geom_smooth(method='lm') + geom_text(aes(label=Departments.STEM),hjust=0, vjust=0) + ggtitle("Department Course Count vs Department Frequency (STEM Departments)") + xlab("Number of Courses in Departments") + ylab("Frequency Department was Scheduled")
+
+# Find correlation (STEM)
+cor(coursesByDeptCorrelation.STEM,deptStudentEnrolled.STEM)
+
+# Generate plot (nonSTEM)
+qplot(coursesByDeptCorrelation.nonSTEM,deptStudentEnrolled.nonSTEM) + geom_point() + geom_smooth(method='lm') + geom_text(aes(label=Departments.nonSTEM),hjust=0, vjust=0) + ggtitle("Department Course Count vs Department Frequency (Non-STEM Departments") + xlab("Number of Courses in Departments") + ylab("Frequency Department was Scheduled")
+
+# Find correlation (nonSTEM)
+cor(coursesByDeptCorrelation.nonSTEM,deptStudentEnrolled.nonSTEM)
+```
+
+From these plots, we can see that STEM departments, on average, have fewer courses 
+and more people scheduling them. We can see this from departments like CSCI, 
+MATH, CHEM, PHYS, and ENGR being above the correlation line. This makes sense 
+since non-STEM courses are often smaller and more discussion-based. Additionally,
+there are fewer STEM departments than non-STEM departments, which partially 
+explains why they appear to be more popular than the non-STEM departments.
+
+### Correlating Frequency of Course Levels Scheduled and Registration Time
+
+In this section, we wanted to look at when different levels of courses (100-level, 200-level, etc) 
+were scheduled over time in a single registration period. We began by plotting all of the course 
+data for the 26 days leading up the end of the November 2016 course registration period. 
+
+```{r correlationRegistrationPeriodAll}
+# Plot it
+ggplot(levelByTimeClean, aes(x=daysUntil, y = level, color=department, size=count)) + geom_jitter() + geom_smooth(aes(group = 1), method='lm') + scale_x_reverse() + 
+xlab("Days Until End of Course Registration") +
+ylab("Level of Course") +
+ggtitle("Frequency of Course Levels Scheduled vs Registration Time")
+```
+
+From this plot, we see a general downward trend in the level of course being 
+scheduled as we approached the end of the course registration period. From the 
+slope of the correlation line, we can infer that upperclassmen, who are first 
+to register for courses, are the ones planning out their schedules first. 
+
+Next, we looked at the data for individual departments.
+
+```{r correlationRegistrationPeriodDepts}
+# plot for one dept
+levelByTimeClean.CSCI <- levelByTimeClean[levelByTimeClean$department == "CSCI",]
+ggplot(levelByTimeClean.CSCI, aes(x=daysUntil, y = level, size=count)) + geom_point()+ geom_smooth(aes(group = 1), method='lm') + scale_x_reverse() + 
+xlab("Days Until End of Course Registration") +
+ylab("Level of Course") +
+ggtitle("Frequency of Course Levels Scheduled vs Registration Time (CSCI)")
+
+# plot for one dept
+levelByTimeClean.ECON <- levelByTimeClean[levelByTimeClean$department == "ECON",]
+ggplot(levelByTimeClean.ECON, aes(x=daysUntil, y = level, size=count)) + geom_point()+ geom_smooth(aes(group = 1), method='lm') + scale_x_reverse() + 
+xlab("Days Until End of Course Registration") +
+ylab("Level of Course") +
+ggtitle("Frequency of Course Levels Scheduled vs Registration Time (ECON)")
+```
+
+These plots display a similar trend of lower level courses being scheduled later 
+on in the course registration period.
+
+## Clustering
+
+We use the data clustered by schedule creation time, to create a frequency plot 
+that visualizes the different semesters in our data.
+
+[See data above](#create-dataset-for-clustering)
+
+```{r clustering}
+ggplot(dateCounts, aes(Date, count, color = as.character(dateCluster$cluster))) + geom_point() + ylab("Frequency") + xlab("Schedule Creation Time (Unix timestamp)")  + guides(color=guide_legend(title="Semester")) + ggtitle("Clustering by Semester")
+```
+
+Plot Analysis:     
+The plot shows how many schedules were created each day over the past 2 years and the colors represent different semesters. Since there were 4 semesters, each with a registration period, it is expected to see a spike in each semester where a lot of schedules were created. 
+
+Clustering Algorithm:    
+We can see that the kmeans clustering algorithm performed well. It was able to determine the four semesters based on the frequency of schedules being made.   
